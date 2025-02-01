@@ -127,7 +127,7 @@ int runGpuSaxpy(int vectorSize) {
     #endif
 
     int errorCount = verifyVector(x, y_cpu, y, scale, vectorSize);
-    std::cout << "Found " << errorCount << " / " << vectorSize << " errors \n";
+    std::cout << "Found " << errorCount << " / " << vectorSize << " possible errors \n";
 
     // Free memory
     free(x);
