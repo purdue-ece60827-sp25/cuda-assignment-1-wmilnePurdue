@@ -1,0 +1,7 @@
+.nfs*
+CMakeCache.txt
+CMakeFiles/*
+src/CMakeFiles/*
+src/Makefile
+src/cmake_install.cmake
+cmake_install.cmake

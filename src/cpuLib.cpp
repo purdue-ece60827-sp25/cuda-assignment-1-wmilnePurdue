@@ -15,7 +15,12 @@ void dbprintf(const char* fmt...) {
 
 void vectorInit(float* v, int size) {
 	for (int idx = 0; idx < size; ++idx) {
-		v[idx] = (float)(rand() % 100);
+		std::random_device rd;  // Create a new random device each time
+    	std::mt19937 gen(rd()); // Create and seed a new engine each time
+    	std::uniform_real_distribution<> distrib(MIN_VAL, MAX_VAL); // The distribution
+
+		//v[idx] = (float)(rand() % 100); //same each run 
+		v[idx] = (float)distrib(gen); //varies each run (should)
 	}
 }
 

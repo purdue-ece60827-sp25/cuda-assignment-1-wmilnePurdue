@@ -13,7 +13,11 @@
 	#include <cstdarg>
 	
 	// Uncomment this to suppress console output
-	// #define DEBUG_PRINT_DISABLE
+	#define DEBUG_PRINT_DISABLE
+
+	// Define the bounds of distrib using macros
+	#define MIN_VAL 0.0
+	#define MAX_VAL 1000.0
 
 	extern void dbprintf(const char* fmt...);
 
