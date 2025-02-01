@@ -21,10 +21,9 @@ void saxpy_gpu (float* x, float* y, float scale, int size) {
 
 int runGpuSaxpy(int vectorSize) {
 
-    //no cpu memory allocation/deallocation checks or overflow/saturation logic b/c thought code was becoming overkill for what was requested
     if (vectorSize == 0) {
         std::cerr << "Error: vectorSize cannot be 0" << std::endl;
-        return 1; // Or handle it differently
+        return -1; 
     }
 
     float *x, *y, *d_x, *d_y;
@@ -102,7 +101,7 @@ int runGpuSaxpy(int vectorSize) {
         free(y_cpu);
         cudaFree(d_x);
         cudaFree(d_y);
-        return 1; // Return error code
+        return -1; // Return error code
     }
 
     // Copy data to device
@@ -116,6 +115,7 @@ int runGpuSaxpy(int vectorSize) {
     // Copy results back to host
     gpuAssert(cudaMemcpy(y, d_y, vectorSize * sizeof(float), cudaMemcpyDeviceToHost), __FILE__, __LINE__, true);
 
+    int errorCount = verifyVector(x, y_cpu, y, scale, vectorSize);
 
     #ifndef DEBUG_PRINT_DISABLE  
         std::cout << "\nGPU and CPU Results:\n";
@@ -124,10 +124,8 @@ int runGpuSaxpy(int vectorSize) {
             std::cout << std::fixed << y[i] << ", ";
         }
         std::cout << " ... }\n";
+        std::cout << "Found " << errorCount << " / " << vectorSize << " possible errors \n";
     #endif
-
-    int errorCount = verifyVector(x, y_cpu, y, scale, vectorSize);
-    std::cout << "Found " << errorCount << " / " << vectorSize << " possible errors \n";
 
     // Free memory
     free(x);
@@ -154,11 +152,33 @@ int runGpuSaxpy(int vectorSize) {
 __global__
 void generatePoints (uint64_t * pSums, uint64_t pSumSize, uint64_t sampleSize) {
 	//	Insert code here
+    int threadId = blockIdx.x * blockDim.x + threadIdx.x;
+    curandState_t rng;
+    curand_init(clock64(), threadId, 0, &rng);
+
+    uint64_t hitCount = 0;
+    for (uint64_t i = 0; i < sampleSize; ++i) {
+        float x = curand_uniform(&rng);
+        float y = curand_uniform(&rng);
+        if (x * x + y * y < 1) {
+            ++hitCount;
+        }
+    }
+    pSums[threadId] = hitCount;
 }
 
 __global__ 
 void reduceCounts (uint64_t * pSums, uint64_t * totals, uint64_t pSumSize, uint64_t reduceSize) {
 	//	Insert code here
+    int threadId = blockIdx.x * blockDim.x + threadIdx.x;
+    uint64_t start = threadId * reduceSize;
+    uint64_t end = min(start + reduceSize, pSumSize);
+
+    uint64_t sum = 0;
+    for (uint64_t i = start; i < end; ++i) {
+        sum += pSums[i];
+    }
+    totals[threadId] = sum;
 }
 
 int runGpuMCPi (uint64_t generateThreadCount, uint64_t sampleSize, 
@@ -191,9 +211,34 @@ double estimatePi(uint64_t generateThreadCount, uint64_t sampleSize,
 	uint64_t reduceThreadCount, uint64_t reduceSize) {
 	
 	double approxPi = 0;
+    uint64_t *d_pSums, *d_totals;
 
-	//      Insert code here
-	std::cout << "Sneaky, you are ...\n";
-	std::cout << "Compute pi, you must!\n";
-	return approxPi;
+    gpuAssert(cudaMalloc(&d_pSums, generateThreadCount * sizeof(uint64_t)), __FILE__, __LINE__, true);
+    gpuAssert(cudaMalloc(&d_totals, reduceThreadCount * sizeof(uint64_t)), __FILE__, __LINE__, true);
+
+    dim3 blockDim(256); 
+    dim3 gridDimGenerate((generateThreadCount + blockDim.x - 1) / blockDim.x);
+    dim3 gridDimReduce((reduceThreadCount + blockDim.x - 1) / blockDim.x);
+
+    generatePoints<<<gridDimGenerate, blockDim>>>(d_pSums, generateThreadCount, sampleSize);
+    gpuAssert(cudaDeviceSynchronize(), __FILE__, __LINE__, true);
+
+    reduceCounts<<<gridDimReduce, blockDim>>>(d_pSums, d_totals, generateThreadCount, reduceSize);
+    gpuAssert(cudaDeviceSynchronize(), __FILE__, __LINE__, true);
+
+    uint64_t *h_totals = new uint64_t[reduceThreadCount];
+    gpuAssert(cudaMemcpy(h_totals, d_totals, reduceThreadCount * sizeof(uint64_t), cudaMemcpyDeviceToHost), __FILE__, __LINE__, true);
+
+    uint64_t totalHits = 0;
+    for (uint64_t i = 0; i < reduceThreadCount; ++i) {
+        totalHits += h_totals[i];
+    }
+
+    approxPi = (double)totalHits / (generateThreadCount * sampleSize) * 4.0;
+
+    delete[] h_totals;
+    gpuAssert(cudaFree(d_pSums), __FILE__, __LINE__, true);
+    gpuAssert(cudaFree(d_totals), __FILE__, __LINE__, true);
+
+    return approxPi;
 }

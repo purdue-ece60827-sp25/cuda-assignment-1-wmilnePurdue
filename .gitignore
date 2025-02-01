@@ -1,3 +1,4 @@
+*.py
 .nfs*
 CMakeCache.txt
 CMakeFiles/*
