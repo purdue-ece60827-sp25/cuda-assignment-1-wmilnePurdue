@@ -210,33 +210,69 @@ int runGpuMCPi (uint64_t generateThreadCount, uint64_t sampleSize,
 double estimatePi(uint64_t generateThreadCount, uint64_t sampleSize, 
 	uint64_t reduceThreadCount, uint64_t reduceSize) {
 	
-	double approxPi = 0;
+    double approxPi = 0;
     uint64_t *d_pSums, *d_totals;
 
     gpuAssert(cudaMalloc(&d_pSums, generateThreadCount * sizeof(uint64_t)), __FILE__, __LINE__, true);
-    gpuAssert(cudaMalloc(&d_totals, reduceThreadCount * sizeof(uint64_t)), __FILE__, __LINE__, true);
 
-    dim3 blockDim(256); 
-    dim3 gridDimGenerate((generateThreadCount + blockDim.x - 1) / blockDim.x);
-    dim3 gridDimReduce((reduceThreadCount + blockDim.x - 1) / blockDim.x);
+    uint64_t actualReduceThreadCount = std::max((uint64_t)1, reduceThreadCount);
+    gpuAssert(cudaMalloc(&d_totals, actualReduceThreadCount * sizeof(uint64_t)), __FILE__, __LINE__, true);
 
-    generatePoints<<<gridDimGenerate, blockDim>>>(d_pSums, generateThreadCount, sampleSize);
+    int deviceId = 0;
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, deviceId);
+
+    int maxThreadsPerBlock = prop.maxThreadsPerBlock;
+    int maxGridDimX = prop.maxGridSize[0];
+
+    int generateThreadsPerBlock = std::min((int)256, maxThreadsPerBlock);
+    int generateNumBlocks = std::min((int)1024, maxGridDimX);
+    dim3 blockDimGenerate(generateThreadsPerBlock);
+    dim3 gridDimGenerate((generateThreadCount + blockDimGenerate.x - 1) / blockDimGenerate.x);
+
+    int reduceThreadsPerBlock = std::min((int)256, maxThreadsPerBlock);
+    int reduceNumBlocks = std::min((int)1024, maxGridDimX);
+    dim3 blockDimReduce(reduceThreadsPerBlock);
+    dim3 gridDimReduce((reduceThreadCount + blockDimReduce.x - 1) / blockDimReduce.x);
+
+    generatePoints<<<gridDimGenerate, blockDimGenerate>>>(d_pSums, generateThreadCount, sampleSize);
     gpuAssert(cudaDeviceSynchronize(), __FILE__, __LINE__, true);
 
-    reduceCounts<<<gridDimReduce, blockDim>>>(d_pSums, d_totals, generateThreadCount, reduceSize);
-    gpuAssert(cudaDeviceSynchronize(), __FILE__, __LINE__, true);
+    bool skipReduction = (reduceThreadCount == 0);
 
-    uint64_t *h_totals = new uint64_t[reduceThreadCount];
-    gpuAssert(cudaMemcpy(h_totals, d_totals, reduceThreadCount * sizeof(uint64_t), cudaMemcpyDeviceToHost), __FILE__, __LINE__, true);
+    if (!skipReduction) {
+        reduceSize = generateThreadCount / reduceThreadCount;
+        if (reduceSize == 0) skipReduction = true;
+    } else {
+        reduceSize = generateThreadCount;
+    }
 
     uint64_t totalHits = 0;
-    for (uint64_t i = 0; i < reduceThreadCount; ++i) {
-        totalHits += h_totals[i];
+
+    if (!skipReduction) {
+        reduceCounts<<<gridDimReduce, blockDimReduce>>>(d_pSums, d_totals, generateThreadCount, reduceSize);
+        gpuAssert(cudaDeviceSynchronize(), __FILE__, __LINE__, true);
+
+        uint64_t *h_totals = new uint64_t[std::max((uint64_t)1, reduceThreadCount)];
+        gpuAssert(cudaMemcpy(h_totals, d_totals, std::max((uint64_t)1, reduceThreadCount) * sizeof(uint64_t), cudaMemcpyDeviceToHost), __FILE__, __LINE__, true);
+
+        for (uint64_t i = 0; i < std::max((uint64_t)1, reduceThreadCount); ++i) {
+            totalHits += h_totals[i];
+        }
+        delete[] h_totals;
+
+    } else {
+        uint64_t* h_totals = new uint64_t[generateThreadCount];
+        gpuAssert(cudaMemcpy(h_totals, d_pSums, generateThreadCount * sizeof(uint64_t), cudaMemcpyDeviceToHost), __FILE__, __LINE__, true);
+
+        for (uint64_t i = 0; i < generateThreadCount; ++i) {
+            totalHits += h_totals[i];
+        }
+        delete[] h_totals;
     }
 
     approxPi = (double)totalHits / (generateThreadCount * sampleSize) * 4.0;
 
-    delete[] h_totals;
     gpuAssert(cudaFree(d_pSums), __FILE__, __LINE__, true);
     gpuAssert(cudaFree(d_totals), __FILE__, __LINE__, true);
 
